@@ -68,12 +68,18 @@ class IDMClient:
     """Enhanced IDM client with caching and permission tracing."""
 
     def __init__(self, server: str, username: str = None, password: str = None,
-                 use_kerberos: bool = False, verify_ssl: bool = False):
+                 use_kerberos: bool = False, verify_ssl: bool = False, debug: bool = False):
         self.server = server
         self.verify_ssl = verify_ssl
+        self.debug = debug
         self._client = None
         self._cache = {}
         self._connect(username, password, use_kerberos)
+    
+    def _debug(self, msg):
+        """Print debug message if debug mode is enabled."""
+        if self.debug:
+            print(f"[DEBUG] {msg}")
 
     def _connect(self, username: str, password: str, use_kerberos: bool):
         """Establish connection to FreeIPA server."""
@@ -107,18 +113,41 @@ class IDMClient:
             return cached
 
         try:
+            self._debug("Fetching all users from IDM...")
             result = self._client.user_find(all=True, sizelimit=0)
+            self._debug(f"Raw API response keys: {result.keys() if result else 'None'}")
+            self._debug(f"Number of results: {len(result.get('result', []))}")
+            
+            # Debug: print first user structure
+            if result.get('result') and len(result['result']) > 0:
+                first_user = result['result'][0]
+                self._debug(f"First user keys: {first_user.keys()}")
+                self._debug(f"First user sample: uid={first_user.get('uid')}, cn={first_user.get('cn')}")
+            
             users = []
             for user in result.get('result', []):
+                # Handle both list and string formats for uid
+                uid = user.get('uid', [''])[0] if isinstance(user.get('uid'), list) else user.get('uid', '')
+                cn = user.get('cn', [''])[0] if isinstance(user.get('cn'), list) else user.get('cn', '')
+                mail_field = user.get('mail')
+                mail = mail_field[0] if isinstance(mail_field, list) and mail_field else (mail_field if mail_field else '')
+                
                 users.append({
-                    'uid': user.get('uid', [''])[0],
-                    'cn': user.get('cn', [''])[0],
-                    'mail': user.get('mail', [''])[0] if user.get('mail') else '',
+                    'uid': uid,
+                    'cn': cn,
+                    'mail': mail,
                     'memberof_group': user.get('memberof_group', []),
                 })
+            
+            self._debug(f"Processed {len(users)} users")
+            if users:
+                self._debug(f"Sample users: {[u['uid'] for u in users[:5]]}")
+            
             return self._cache_set(cache_key, users)
         except Exception as e:
             print(f"Error fetching users: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def get_user(self, username: str) -> Optional[Dict]:
@@ -128,12 +157,19 @@ class IDMClient:
             return cached
 
         try:
+            self._debug(f"Fetching user: {username}")
             result = self._client.user_show(username, all=True)
+            self._debug(f"user_show result type: {type(result)}")
+            self._debug(f"user_show result keys: {result.keys() if isinstance(result, dict) else 'not a dict'}")
+            self._debug(f"user_show result: {result}")
             return self._cache_set(cache_key, result)
         except NotFound:
+            self._debug(f"User not found: {username}")
             return None
         except Exception as e:
             print(f"Error fetching user {username}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     # ==================== Group Methods ====================
@@ -799,6 +835,50 @@ def api_get_sudo_rules():
     return jsonify(rules)
 
 
+@app.route('/api/debug/user/<username>')
+def api_debug_user(username: str):
+    """Debug endpoint to see raw user data."""
+    try:
+        # Try direct API call
+        result = idm_client._client.user_show(username, all=True)
+        return jsonify({
+            'status': 'success',
+            'raw_type': str(type(result)),
+            'raw_data': result
+        })
+    except NotFound:
+        return jsonify({
+            'status': 'not_found',
+            'message': f'User {username} not found in IDM'
+        }), 404
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@app.route('/api/debug/search/<query>')
+def api_debug_search(query: str):
+    """Debug endpoint to search users."""
+    try:
+        result = idm_client._client.user_find(query, all=True, sizelimit=10)
+        return jsonify({
+            'status': 'success',
+            'count': result.get('count', 0),
+            'raw_data': result
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
 # ==================== Main ====================
 
 def main():
@@ -831,7 +911,14 @@ def main():
             password=password,
             use_kerberos=args.kerberos,
             verify_ssl=args.verify_ssl,
+            debug=args.debug,
         )
+        
+        # Test fetching users on startup if debug mode
+        if args.debug:
+            print("\n[DEBUG] Testing user fetch on startup...")
+            test_users = idm_client.get_all_users()
+            print(f"[DEBUG] Found {len(test_users)} users")
 
         print(f"\n[*] Starting web server on http://{args.host}:{args.port}")
         app.run(host=args.host, port=args.port, debug=args.debug)
