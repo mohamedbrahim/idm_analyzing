@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDM Permission Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                    </svg>
+                    <span>IDM Analyzer</span>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-view="analyze">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 16v-4M12 8h.01"/>
+                    </svg>
+                    <span>Analyze User</span>
+                </button>
+                <button class="nav-item" data-view="compare">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                        <circle cx="8.5" cy="7" r="4"/>
+                        <path d="M20 8v6M23 11h-6"/>
+                    </svg>
+                    <span>Compare Users</span>
+                </button>
+                <button class="nav-item" data-view="trace">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                    </svg>
+                    <span>Trace Permission</span>
+                </button>
+                <button class="nav-item" data-view="browse">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                        <polyline points="9 22 9 12 15 12 15 22"/>
+                    </svg>
+                    <span>Browse Rules</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="connection-status">
+                    <span class="status-dot"></span>
+                    <span>Connected to IDM</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Analyze View -->
+            <section id="view-analyze" class="view active">
+                <header class="view-header">
+                    <h1>Analyze User Permissions</h1>
+                    <p>Select a user to visualize their complete permission tree</p>
+                </header>
+
+                <div class="search-container">
+                    <div class="search-box">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/>
+                            <path d="M21 21l-4.35-4.35"/>
+                        </svg>
+                        <input type="text" id="user-search" placeholder="Search users..." autocomplete="off">
+                        <div id="user-suggestions" class="suggestions"></div>
+                    </div>
+                    <button id="btn-analyze" class="btn-primary">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                        Analyze
+                    </button>
+                </div>
+
+                <div id="analysis-results" class="analysis-results hidden">
+                    <div class="results-grid">
+                        <!-- User Info Card -->
+                        <div class="card user-info-card">
+                            <div class="card-header">
+                                <h3>User Information</h3>
+                            </div>
+                            <div class="card-body" id="user-info-content">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Stats Cards -->
+                        <div class="stats-grid">
+                            <div class="stat-card" id="stat-groups">
+                                <div class="stat-icon groups">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                                        <circle cx="9" cy="7" r="4"/>
+                                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                                        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                                    </svg>
+                                </div>
+                                <div class="stat-value">0</div>
+                                <div class="stat-label">Groups</div>
+                            </div>
+                            <div class="stat-card" id="stat-hbac">
+                                <div class="stat-icon hbac">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                                        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                                    </svg>
+                                </div>
+                                <div class="stat-value">0</div>
+                                <div class="stat-label">HBAC Rules</div>
+                            </div>
+                            <div class="stat-card" id="stat-sudo">
+                                <div class="stat-icon sudo">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="4 17 10 11 4 5"/>
+                                        <line x1="12" y1="19" x2="20" y2="19"/>
+                                    </svg>
+                                </div>
+                                <div class="stat-value">0</div>
+                                <div class="stat-label">Sudo Rules</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Graph Container -->
+                    <div class="graph-section">
+                        <div class="graph-header">
+                            <h3>Permission Graph</h3>
+                            <div class="graph-controls">
+                                <button id="btn-zoom-in" class="btn-icon" title="Zoom In">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="11" cy="11" r="8"/>
+                                        <path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/>
+                                    </svg>
+                                </button>
+                                <button id="btn-zoom-out" class="btn-icon" title="Zoom Out">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="11" cy="11" r="8"/>
+                                        <path d="M21 21l-4.35-4.35M8 11h6"/>
+                                    </svg>
+                                </button>
+                                <button id="btn-fit" class="btn-icon" title="Fit to View">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+                                    </svg>
+                                </button>
+                                <button id="btn-export" class="btn-icon" title="Export PNG">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                        <polyline points="7 10 12 15 17 10"/>
+                                        <line x1="12" y1="15" x2="12" y2="3"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="graph-legend">
+                            <div class="legend-item"><span class="legend-color user"></span>User</div>
+                            <div class="legend-item"><span class="legend-color group"></span>Group</div>
+                            <div class="legend-item"><span class="legend-color hbac"></span>HBAC Rule</div>
+                            <div class="legend-item"><span class="legend-color sudo"></span>Sudo Rule</div>
+                        </div>
+                        <div id="graph-container" class="graph-container">
+                            <div class="graph-placeholder">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                                    <circle cx="12" cy="5" r="3"/>
+                                    <line x1="12" y1="8" x2="12" y2="12"/>
+                                    <circle cx="6" cy="17" r="3"/>
+                                    <circle cx="18" cy="17" r="3"/>
+                                    <line x1="12" y1="12" x2="6" y2="14"/>
+                                    <line x1="12" y1="12" x2="18" y2="14"/>
+                                </svg>
+                                <p>Select a user to visualize their permissions</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Details Panel -->
+                    <div class="details-section">
+                        <div class="tabs">
+                            <button class="tab active" data-tab="groups">Groups</button>
+                            <button class="tab" data-tab="hbac">HBAC Rules</button>
+                            <button class="tab" data-tab="sudo">Sudo Rules</button>
+                        </div>
+                        <div class="tab-content" id="tab-content">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Compare View -->
+            <section id="view-compare" class="view">
+                <header class="view-header">
+                    <h1>Compare Users</h1>
+                    <p>Compare permissions between two users side-by-side</p>
+                </header>
+
+                <div class="compare-inputs">
+                    <div class="compare-user">
+                        <label>User 1</label>
+                        <div class="search-box">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="11" cy="11" r="8"/>
+                                <path d="M21 21l-4.35-4.35"/>
+                            </svg>
+                            <input type="text" id="compare-user1" placeholder="Search user..." autocomplete="off">
+                            <div class="suggestions" id="suggestions-user1"></div>
+                        </div>
+                    </div>
+                    <div class="compare-vs">VS</div>
+                    <div class="compare-user">
+                        <label>User 2</label>
+                        <div class="search-box">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="11" cy="11" r="8"/>
+                                <path d="M21 21l-4.35-4.35"/>
+                            </svg>
+                            <input type="text" id="compare-user2" placeholder="Search user..." autocomplete="off">
+                            <div class="suggestions" id="suggestions-user2"></div>
+                        </div>
+                    </div>
+                    <button id="btn-compare" class="btn-primary">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                        </svg>
+                        Compare
+                    </button>
+                </div>
+
+                <div id="compare-results" class="compare-results hidden">
+                    <!-- Populated by JS -->
+                </div>
+            </section>
+
+            <!-- Trace View -->
+            <section id="view-trace" class="view">
+                <header class="view-header">
+                    <h1>Trace Permission Source</h1>
+                    <p>Find where a specific permission comes from</p>
+                </header>
+
+                <div class="trace-inputs">
+                    <div class="trace-field">
+                        <label>Username</label>
+                        <div class="search-box">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="11" cy="11" r="8"/>
+                                <path d="M21 21l-4.35-4.35"/>
+                            </svg>
+                            <input type="text" id="trace-user" placeholder="Search user..." autocomplete="off">
+                            <div class="suggestions" id="suggestions-trace"></div>
+                        </div>
+                    </div>
+                    <div class="trace-field">
+                        <label>Host (optional)</label>
+                        <div class="search-box">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                                <line x1="8" y1="21" x2="16" y2="21"/>
+                                <line x1="12" y1="17" x2="12" y2="21"/>
+                            </svg>
+                            <input type="text" id="trace-host" placeholder="Filter by host..." autocomplete="off">
+                            <div class="suggestions" id="suggestions-host"></div>
+                        </div>
+                    </div>
+                    <button id="btn-trace" class="btn-primary">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/>
+                            <path d="M21 21l-4.35-4.35"/>
+                        </svg>
+                        Trace
+                    </button>
+                </div>
+
+                <div id="trace-results" class="trace-results hidden">
+                    <!-- Populated by JS -->
+                </div>
+            </section>
+
+            <!-- Browse View -->
+            <section id="view-browse" class="view">
+                <header class="view-header">
+                    <h1>Browse Rules</h1>
+                    <p>View all HBAC and Sudo rules in your environment</p>
+                </header>
+
+                <div class="browse-tabs">
+                    <button class="browse-tab active" data-browse="hbac">HBAC Rules</button>
+                    <button class="browse-tab" data-browse="sudo">Sudo Rules</button>
+                    <button class="browse-tab" data-browse="groups">Groups</button>
+                </div>
+
+                <div id="browse-content" class="browse-content">
+                    <!-- Populated by JS -->
+                </div>
+            </section>
+        </main>
+
+        <!-- Node Detail Modal -->
+        <div id="node-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="modal-title">Node Details</h3>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body" id="modal-body">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- D3.js for graph visualization -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
