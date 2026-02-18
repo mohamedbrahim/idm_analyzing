@@ -161,7 +161,13 @@ class IDMClient:
             result = self._client.user_show(username, all=True)
             self._debug(f"user_show result type: {type(result)}")
             self._debug(f"user_show result keys: {result.keys() if isinstance(result, dict) else 'not a dict'}")
-            self._debug(f"user_show result: {result}")
+            
+            # Unwrap the result - API returns {'result': {...}, 'value': ..., 'summary': ...}
+            if isinstance(result, dict) and 'result' in result:
+                user_data = result['result']
+                self._debug(f"Unwrapped user data keys: {user_data.keys()}")
+                return self._cache_set(cache_key, user_data)
+            
             return self._cache_set(cache_key, result)
         except NotFound:
             self._debug(f"User not found: {username}")
@@ -182,6 +188,10 @@ class IDMClient:
 
         try:
             result = self._client.group_show(groupname, all=True)
+            # Unwrap the result - API returns {'result': {...}, 'value': ..., 'summary': ...}
+            if isinstance(result, dict) and 'result' in result:
+                group_data = result['result']
+                return self._cache_set(cache_key, group_data)
             return self._cache_set(cache_key, result)
         except NotFound:
             return None
@@ -259,6 +269,9 @@ class IDMClient:
 
         try:
             result = self._client.hbacrule_show(rule_name, all=True)
+            # Unwrap the result
+            if isinstance(result, dict) and 'result' in result:
+                return self._cache_set(cache_key, result['result'])
             return self._cache_set(cache_key, result)
         except NotFound:
             return None
@@ -286,6 +299,9 @@ class IDMClient:
 
         try:
             result = self._client.sudorule_show(rule_name, all=True)
+            # Unwrap the result
+            if isinstance(result, dict) and 'result' in result:
+                return self._cache_set(cache_key, result['result'])
             return self._cache_set(cache_key, result)
         except NotFound:
             return None
@@ -320,6 +336,9 @@ class IDMClient:
 
         try:
             result = self._client.hostgroup_show(hostgroup_name, all=True)
+            # Unwrap the result
+            if isinstance(result, dict) and 'result' in result:
+                return self._cache_set(cache_key, result['result'])
             return self._cache_set(cache_key, result)
         except NotFound:
             return None
@@ -333,14 +352,24 @@ class IDMClient:
             return set()
 
         all_groups = set()
+        
+        # Direct groups
         direct_groups = user.get('memberof_group', [])
-
         for group in direct_groups:
             all_groups.add(group)
-            # Get nested memberships
+        
+        # Indirect groups (nested) - IDM provides this directly!
+        indirect_groups = user.get('memberofindirect_group', [])
+        for group in indirect_groups:
+            all_groups.add(group)
+        
+        # Also traverse manually for group hierarchy building
+        for group in direct_groups:
             nested = self.get_nested_group_membership(group)
             for n in nested:
                 all_groups.add(n['parent'])
+
+        return all_groups
 
         return all_groups
 
@@ -353,6 +382,7 @@ class IDMClient:
         # Get all groups (direct and nested)
         all_groups = self.get_user_all_groups(username)
         direct_groups = set(user.get('memberof_group', []))
+        indirect_groups = set(user.get('memberofindirect_group', []))
 
         # Build group hierarchy
         group_hierarchy = []
@@ -360,75 +390,142 @@ class IDMClient:
             nested = self.get_nested_group_membership(group)
             group_hierarchy.extend(nested)
 
-        # Analyze HBAC rules
-        hbac_rules = self._analyze_hbac_for_user(username, all_groups)
+        # Get HBAC rules directly from user object (IDM provides this!)
+        direct_hbac = user.get('memberof_hbacrule', [])
+        indirect_hbac = user.get('memberofindirect_hbacrule', [])
+        
+        # Get Sudo rules directly from user object
+        direct_sudo = user.get('memberof_sudorule', [])
+        indirect_sudo = user.get('memberofindirect_sudorule', [])
 
-        # Analyze Sudo rules
-        sudo_rules = self._analyze_sudo_for_user(username, all_groups)
+        # Analyze HBAC rules with details
+        hbac_rules = self._analyze_hbac_for_user(username, all_groups, direct_hbac, indirect_hbac)
+
+        # Analyze Sudo rules with details
+        sudo_rules = self._analyze_sudo_for_user(username, all_groups, direct_sudo, indirect_sudo)
+
+        # Helper to safely extract first element
+        def safe_first(val, default=''):
+            if isinstance(val, list) and val:
+                return val[0]
+            return val if val else default
 
         return {
             'user': {
-                'uid': user.get('uid', [''])[0],
-                'cn': user.get('cn', [''])[0],
-                'mail': user.get('mail', [''])[0] if user.get('mail') else '',
+                'uid': safe_first(user.get('uid')),
+                'cn': safe_first(user.get('cn')),
+                'mail': safe_first(user.get('mail')),
             },
             'direct_groups': list(direct_groups),
+            'indirect_groups': list(indirect_groups),
             'all_groups': list(all_groups),
             'group_hierarchy': group_hierarchy,
             'hbac_rules': hbac_rules,
             'sudo_rules': sudo_rules,
+            'direct_hbac_rules': direct_hbac,
+            'indirect_hbac_rules': indirect_hbac,
+            'direct_sudo_rules': direct_sudo,
+            'indirect_sudo_rules': indirect_sudo,
         }
 
-    def _analyze_hbac_for_user(self, username: str, user_groups: Set[str]) -> List[Dict]:
+    def _analyze_hbac_for_user(self, username: str, user_groups: Set[str], 
+                                 direct_hbac: List[str] = None, indirect_hbac: List[str] = None) -> List[Dict]:
         """Analyze which HBAC rules apply to a user and how."""
         rules = []
         all_hbac = self.get_all_hbac_rules()
+        
+        # Combine direct and indirect rules we know apply to this user
+        known_rules = set(direct_hbac or []) | set(indirect_hbac or [])
+        direct_rules_set = set(direct_hbac or [])
+
+        # Helper to safely get first element
+        def safe_first(val, default=''):
+            if isinstance(val, list) and val:
+                return val[0]
+            return val if val else default
 
         for rule in all_hbac:
-            rule_name = rule.get('cn', [''])[0]
-            enabled = rule.get('ipaenabledflag', [''])[0]
+            rule_name = safe_first(rule.get('cn'))
+            enabled = safe_first(rule.get('ipaenabledflag'))
 
             if enabled != 'TRUE':
                 continue
-
+            
+            # Check if this rule applies to the user
+            is_known_rule = rule_name in known_rules
             match_info = self._check_rule_user_match(rule, username, user_groups, 'memberuser')
-
-            if match_info['matches']:
+            
+            if is_known_rule or match_info['matches']:
+                # Determine match type
+                if rule_name in direct_rules_set:
+                    match_type = 'direct'
+                    via_groups = []
+                elif rule_name in known_rules:
+                    match_type = 'via_group'
+                    via_groups = match_info.get('via_groups', [])
+                else:
+                    match_type = match_info.get('match_type', 'unknown')
+                    via_groups = match_info.get('via_groups', [])
+                
                 # Get hosts this rule applies to
                 hosts = self._get_rule_hosts(rule, 'memberhost')
 
                 rules.append({
                     'name': rule_name,
                     'type': 'hbac',
-                    'match_type': match_info['match_type'],
-                    'via_groups': match_info['via_groups'],
-                    'path': match_info['path'],
+                    'match_type': match_type,
+                    'via_groups': via_groups,
+                    'path': match_info.get('path', []),
                     'hosts': hosts['hosts'],
                     'hostgroups': hosts['hostgroups'],
-                    'host_category': rule.get('hostcategory', [''])[0],
+                    'host_category': safe_first(rule.get('hostcategory')),
                     'services': rule.get('memberservice_hbacsvc', []),
                     'service_groups': rule.get('memberservice_hbacsvcgroup', []),
-                    'service_category': rule.get('servicecategory', [''])[0],
-                    'description': rule.get('description', [''])[0] if rule.get('description') else '',
+                    'service_category': safe_first(rule.get('servicecategory')),
+                    'description': safe_first(rule.get('description')),
                 })
 
         return rules
 
-    def _analyze_sudo_for_user(self, username: str, user_groups: Set[str]) -> List[Dict]:
+    def _analyze_sudo_for_user(self, username: str, user_groups: Set[str],
+                                 direct_sudo: List[str] = None, indirect_sudo: List[str] = None) -> List[Dict]:
         """Analyze which sudo rules apply to a user and how."""
         rules = []
         all_sudo = self.get_all_sudo_rules()
+        
+        # Combine direct and indirect rules we know apply to this user
+        known_rules = set(direct_sudo or []) | set(indirect_sudo or [])
+        direct_rules_set = set(direct_sudo or [])
+
+        # Helper to safely get first element
+        def safe_first(val, default=''):
+            if isinstance(val, list) and val:
+                return val[0]
+            return val if val else default
 
         for rule in all_sudo:
-            rule_name = rule.get('cn', [''])[0]
-            enabled = rule.get('ipaenabledflag', [''])[0]
+            rule_name = safe_first(rule.get('cn'))
+            enabled = safe_first(rule.get('ipaenabledflag'))
 
             if enabled != 'TRUE':
                 continue
 
+            # Check if this rule applies to the user
+            is_known_rule = rule_name in known_rules
             match_info = self._check_rule_user_match(rule, username, user_groups, 'memberuser')
 
-            if match_info['matches']:
+            if is_known_rule or match_info['matches']:
+                # Determine match type
+                if rule_name in direct_rules_set:
+                    match_type = 'direct'
+                    via_groups = []
+                elif rule_name in known_rules:
+                    match_type = 'via_group'
+                    via_groups = match_info.get('via_groups', [])
+                else:
+                    match_type = match_info.get('match_type', 'unknown')
+                    via_groups = match_info.get('via_groups', [])
+                
                 # Get hosts this rule applies to
                 hosts = self._get_rule_hosts(rule, 'memberhost')
 
@@ -438,30 +535,30 @@ class IDMClient:
                     'allow_groups': rule.get('memberallowcmd_sudocmdgroup', []),
                     'deny': rule.get('memberdenycmd_sudocmd', []),
                     'deny_groups': rule.get('memberdenycmd_sudocmdgroup', []),
-                    'cmd_category': rule.get('cmdcategory', [''])[0],
+                    'cmd_category': safe_first(rule.get('cmdcategory')),
                 }
 
                 # Get runas users
                 runas = {
                     'users': rule.get('ipasudorunas_user', []),
                     'groups': rule.get('ipasudorunas_group', []),
-                    'user_category': rule.get('ipasudorunasusercategory', [''])[0],
-                    'group_category': rule.get('ipasudorunasgroupcategory', [''])[0],
+                    'user_category': safe_first(rule.get('ipasudorunasusercategory')),
+                    'group_category': safe_first(rule.get('ipasudorunasgroupcategory')),
                 }
 
                 rules.append({
                     'name': rule_name,
                     'type': 'sudo',
-                    'match_type': match_info['match_type'],
-                    'via_groups': match_info['via_groups'],
-                    'path': match_info['path'],
+                    'match_type': match_type,
+                    'via_groups': via_groups,
+                    'path': match_info.get('path', []),
                     'hosts': hosts['hosts'],
                     'hostgroups': hosts['hostgroups'],
-                    'host_category': rule.get('hostcategory', [''])[0],
+                    'host_category': safe_first(rule.get('hostcategory')),
                     'commands': commands,
                     'runas': runas,
                     'options': rule.get('ipasudoopt', []),
-                    'description': rule.get('description', [''])[0] if rule.get('description') else '',
+                    'description': safe_first(rule.get('description')),
                 })
 
         return rules
