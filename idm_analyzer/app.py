@@ -902,10 +902,22 @@ class IDMClient:
             self._debug(f"  Got rule data with keys: {rule_data.keys()}")
             
             # Check if enabled
-            enabled = safe_first(rule_data.get('ipaenabledflag'))
-            if enabled != 'TRUE':
-                self._debug(f"  Rule is disabled, skipping")
-                continue
+            enabled_raw = rule_data.get('ipaenabledflag')
+            enabled = safe_first(enabled_raw)
+            self._debug(f"  ipaenabledflag raw: {enabled_raw}, parsed: '{enabled}'")
+            
+            # Handle different possible values for enabled flag
+            is_enabled = (
+                enabled == 'TRUE' or 
+                enabled == 'true' or 
+                enabled == True or
+                (isinstance(enabled_raw, list) and len(enabled_raw) > 0 and enabled_raw[0] in ['TRUE', 'true', True])
+            )
+            
+            if not is_enabled:
+                self._debug(f"  Rule appears disabled (enabled={enabled}), but including anyway for visibility")
+                # Still include disabled rules but mark them
+                # continue  # Commented out - show all rules
             
             # Get hosts info
             hosts = rule_data.get('memberhost_host', [])
@@ -966,6 +978,7 @@ class IDMClient:
                 'rule': rule_name,
                 'rule_type': 'sudo',
                 'match_type': match_type,
+                'enabled': is_enabled,
                 'via_groups': via_groups,
                 'path': path,
                 'hosts': hosts if host_category != 'all' else ['ALL'],
@@ -1040,10 +1053,21 @@ class IDMClient:
                 continue
             
             # Check if enabled
-            enabled = safe_first(rule_data.get('ipaenabledflag'))
-            if enabled != 'TRUE':
-                self._debug(f"  Rule is disabled, skipping")
-                continue
+            enabled_raw = rule_data.get('ipaenabledflag')
+            enabled = safe_first(enabled_raw)
+            self._debug(f"  ipaenabledflag raw: {enabled_raw}, parsed: '{enabled}'")
+            
+            # Handle different possible values for enabled flag
+            is_enabled = (
+                enabled == 'TRUE' or 
+                enabled == 'true' or 
+                enabled == True or
+                (isinstance(enabled_raw, list) and len(enabled_raw) > 0 and enabled_raw[0] in ['TRUE', 'true', True])
+            )
+            
+            if not is_enabled:
+                self._debug(f"  Rule appears disabled (enabled={enabled}), but including anyway for visibility")
+                # Still include disabled rules but mark them
             
             # Get hosts info
             hosts = rule_data.get('memberhost_host', [])
@@ -1083,6 +1107,7 @@ class IDMClient:
                 'rule': rule_name,
                 'rule_type': 'hbac',
                 'match_type': match_type,
+                'enabled': is_enabled,
                 'via_groups': via_groups,
                 'path': path,
                 'hosts': hosts if host_category != 'all' else ['ALL'],

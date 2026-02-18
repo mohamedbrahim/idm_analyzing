@@ -911,6 +911,10 @@ class IDMAnalyzerApp {
             const ruleType = trace.rule_type || 'sudo';
             const typeBadgeClass = ruleType === 'hbac' ? 'hbac' : 'sudo';
             const typeBadgeText = ruleType.toUpperCase();
+            const isEnabled = trace.enabled !== false;
+            const statusBadge = isEnabled 
+                ? '<span class="badge badge-direct">Enabled</span>'
+                : '<span class="badge badge-disabled">Disabled</span>';
             
             // Build path display - the rule is already in path, don't duplicate
             const pathHtml = (trace.path || []).map((item, i) => `
@@ -961,11 +965,12 @@ class IDMAnalyzerApp {
             }
             
             html += `
-                <div class="trace-card">
+                <div class="trace-card ${!isEnabled ? 'trace-disabled' : ''}">
                     <div class="trace-card-header">
                         <div class="trace-rule-name">
                             <span class="type-badge ${typeBadgeClass}">${typeBadgeText}</span>
                             ${trace.rule}
+                            ${statusBadge}
                         </div>
                         ${this.getMatchBadge(trace.match_type)}
                     </div>
