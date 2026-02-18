@@ -244,6 +244,39 @@ html, body {
     pointer-events: none;
 }
 
+/* Graph filter select */
+.graph-filter-select {
+    padding: 8px 32px 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: var(--font-display);
+    font-size: 0.85rem;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239090a0' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    transition: all var(--transition-fast);
+}
+
+.graph-filter-select:hover {
+    border-color: var(--border-light);
+    background-color: var(--bg-hover);
+}
+
+.graph-filter-select:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+    box-shadow: var(--glow-blue);
+}
+
+.graph-filter-select option {
+    background: var(--bg-card);
+    color: var(--text-primary);
+}
+
 .search-box input {
     width: 100%;
     padding: 14px 16px 14px 48px;

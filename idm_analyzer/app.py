@@ -849,19 +849,25 @@ class IDMClient:
         if not user:
             return []
         
-        analysis = self.analyze_user_permissions(username)
-        if 'error' in analysis:
-            return []
+        self._debug(f"Tracing sudo permissions for {username}, host filter: {hostname}")
 
         traces = []
         
         # Get direct and indirect sudo rules from user object
-        direct_sudo = set(user.get('memberof_sudorule', []))
-        indirect_sudo = set(user.get('memberofindirect_sudorule', []))
-        all_sudo = direct_sudo | indirect_sudo
+        direct_sudo = user.get('memberof_sudorule', [])
+        indirect_sudo = user.get('memberofindirect_sudorule', [])
+        all_sudo = set(direct_sudo) | set(indirect_sudo)
         
-        # Get all sudo rules for details
-        all_sudo_rules = self.get_all_sudo_rules()
+        self._debug(f"Found sudo rules - direct: {direct_sudo}, indirect: {indirect_sudo}")
+        
+        if not all_sudo:
+            self._debug("No sudo rules found for user")
+            return []
+        
+        # Get user's groups for path tracing
+        user_direct_groups = user.get('memberof_group', [])
+        user_indirect_groups = user.get('memberofindirect_group', [])
+        all_user_groups = set(user_direct_groups) | set(user_indirect_groups)
         
         # Helper to safely get first element
         def safe_first(val, default=''):
@@ -870,24 +876,43 @@ class IDMClient:
             return val if val else default
         
         for rule_name in all_sudo:
-            # Find rule details
-            rule_data = None
-            for r in all_sudo_rules:
-                if safe_first(r.get('cn')) == rule_name:
-                    rule_data = r
-                    break
+            self._debug(f"Processing sudo rule: {rule_name}")
+            
+            # Fetch rule details directly
+            rule_data = self.get_sudo_rule(rule_name)
             
             if not rule_data:
+                self._debug(f"  Could not fetch rule details, adding basic entry")
+                # Still add an entry even without details
+                traces.append({
+                    'rule': rule_name,
+                    'rule_type': 'sudo',
+                    'match_type': 'direct' if rule_name in direct_sudo else 'via_group',
+                    'via_groups': [],
+                    'path': [{'type': 'user', 'name': username}, {'type': 'rule', 'name': rule_name}],
+                    'hosts': [],
+                    'hostgroups': [],
+                    'host_category': '',
+                    'commands': {'allow': [], 'deny': [], 'cmd_category': ''},
+                    'runas': {'users': [], 'groups': [], 'user_category': ''},
+                    'description': 'Rule details not available',
+                })
                 continue
             
+            self._debug(f"  Got rule data with keys: {rule_data.keys()}")
+            
             # Check if enabled
-            if safe_first(rule_data.get('ipaenabledflag')) != 'TRUE':
+            enabled = safe_first(rule_data.get('ipaenabledflag'))
+            if enabled != 'TRUE':
+                self._debug(f"  Rule is disabled, skipping")
                 continue
             
             # Get hosts info
             hosts = rule_data.get('memberhost_host', [])
             hostgroups = rule_data.get('memberhost_hostgroup', [])
             host_category = safe_first(rule_data.get('hostcategory'))
+            
+            self._debug(f"  Hosts: {hosts}, Hostgroups: {hostgroups}, Category: {host_category}")
             
             # Check if rule applies to the specified host
             if hostname:
@@ -897,31 +922,27 @@ class IDMClient:
                     any(self._host_in_hostgroup(hostname, hg) for hg in hostgroups)
                 )
                 if not applies_to_host:
+                    self._debug(f"  Rule doesn't apply to host {hostname}, skipping")
                     continue
             
-            # Build path
-            path = []
+            # Build path and determine match type
+            path = [{'type': 'user', 'name': username}]
             via_groups = []
             
             if rule_name in direct_sudo:
                 match_type = 'direct'
-                path = [{'type': 'user', 'name': username}, {'type': 'rule', 'name': rule_name}]
             else:
                 match_type = 'via_group'
                 # Find which group(s) connect to this rule
                 rule_groups = set(rule_data.get('memberuser_group', []))
-                user_groups = set(analysis['direct_groups']) | set(analysis.get('indirect_groups', []))
-                connecting_groups = rule_groups & user_groups
+                connecting_groups = rule_groups & all_user_groups
                 via_groups = list(connecting_groups)
                 
-                # Build path through first connecting group
-                if connecting_groups:
-                    first_group = list(connecting_groups)[0]
-                    group_path = self._find_group_path(username, first_group, analysis)
-                    path = [{'type': 'user', 'name': username}]
-                    for g in group_path:
-                        path.append({'type': 'group', 'name': g})
-                    path.append({'type': 'rule', 'name': rule_name})
+                # Add groups to path
+                for group in via_groups[:3]:  # Limit to first 3 for readability
+                    path.append({'type': 'group', 'name': group})
+            
+            path.append({'type': 'rule', 'name': rule_name})
             
             # Get commands
             commands = {
@@ -941,8 +962,9 @@ class IDMClient:
                 'group_category': safe_first(rule_data.get('ipasudorunasgroupcategory')),
             }
             
-            traces.append({
+            trace_entry = {
                 'rule': rule_name,
+                'rule_type': 'sudo',
                 'match_type': match_type,
                 'via_groups': via_groups,
                 'path': path,
@@ -953,8 +975,12 @@ class IDMClient:
                 'runas': runas,
                 'options': rule_data.get('ipasudoopt', []),
                 'description': safe_first(rule_data.get('description')),
-            })
-
+            }
+            
+            traces.append(trace_entry)
+            self._debug(f"  Added trace entry for {rule_name}")
+        
+        self._debug(f"Total traces found: {len(traces)}")
         return traces
 
     def trace_hbac_permission(self, username: str, hostname: str = None) -> List[Dict]:
@@ -963,19 +989,25 @@ class IDMClient:
         if not user:
             return []
         
-        analysis = self.analyze_user_permissions(username)
-        if 'error' in analysis:
-            return []
+        self._debug(f"Tracing HBAC permissions for {username}, host filter: {hostname}")
 
         traces = []
         
         # Get direct and indirect HBAC rules from user object
-        direct_hbac = set(user.get('memberof_hbacrule', []))
-        indirect_hbac = set(user.get('memberofindirect_hbacrule', []))
-        all_hbac = direct_hbac | indirect_hbac
+        direct_hbac = user.get('memberof_hbacrule', [])
+        indirect_hbac = user.get('memberofindirect_hbacrule', [])
+        all_hbac = set(direct_hbac) | set(indirect_hbac)
         
-        # Get all HBAC rules for details
-        all_hbac_rules = self.get_all_hbac_rules()
+        self._debug(f"Found HBAC rules - direct: {direct_hbac}, indirect: {indirect_hbac}")
+        
+        if not all_hbac:
+            self._debug("No HBAC rules found for user")
+            return []
+        
+        # Get user's groups for path tracing
+        user_direct_groups = user.get('memberof_group', [])
+        user_indirect_groups = user.get('memberofindirect_group', [])
+        all_user_groups = set(user_direct_groups) | set(user_indirect_groups)
         
         # Helper to safely get first element
         def safe_first(val, default=''):
@@ -984,18 +1016,33 @@ class IDMClient:
             return val if val else default
         
         for rule_name in all_hbac:
-            # Find rule details
-            rule_data = None
-            for r in all_hbac_rules:
-                if safe_first(r.get('cn')) == rule_name:
-                    rule_data = r
-                    break
+            self._debug(f"Processing HBAC rule: {rule_name}")
+            
+            # Fetch rule details directly
+            rule_data = self.get_hbac_rule(rule_name)
             
             if not rule_data:
+                self._debug(f"  Could not fetch rule details, adding basic entry")
+                traces.append({
+                    'rule': rule_name,
+                    'rule_type': 'hbac',
+                    'match_type': 'direct' if rule_name in direct_hbac else 'via_group',
+                    'via_groups': [],
+                    'path': [{'type': 'user', 'name': username}, {'type': 'rule', 'name': rule_name}],
+                    'hosts': [],
+                    'hostgroups': [],
+                    'host_category': '',
+                    'services': [],
+                    'service_groups': [],
+                    'service_category': '',
+                    'description': 'Rule details not available',
+                })
                 continue
             
             # Check if enabled
-            if safe_first(rule_data.get('ipaenabledflag')) != 'TRUE':
+            enabled = safe_first(rule_data.get('ipaenabledflag'))
+            if enabled != 'TRUE':
+                self._debug(f"  Rule is disabled, skipping")
                 continue
             
             # Get hosts info
@@ -1011,32 +1058,30 @@ class IDMClient:
                     any(self._host_in_hostgroup(hostname, hg) for hg in hostgroups)
                 )
                 if not applies_to_host:
+                    self._debug(f"  Rule doesn't apply to host {hostname}, skipping")
                     continue
             
-            # Build path
-            path = []
+            # Build path and determine match type
+            path = [{'type': 'user', 'name': username}]
             via_groups = []
             
             if rule_name in direct_hbac:
                 match_type = 'direct'
-                path = [{'type': 'user', 'name': username}, {'type': 'rule', 'name': rule_name}]
             else:
                 match_type = 'via_group'
                 rule_groups = set(rule_data.get('memberuser_group', []))
-                user_groups = set(analysis['direct_groups']) | set(analysis.get('indirect_groups', []))
-                connecting_groups = rule_groups & user_groups
+                connecting_groups = rule_groups & all_user_groups
                 via_groups = list(connecting_groups)
                 
-                if connecting_groups:
-                    first_group = list(connecting_groups)[0]
-                    group_path = self._find_group_path(username, first_group, analysis)
-                    path = [{'type': 'user', 'name': username}]
-                    for g in group_path:
-                        path.append({'type': 'group', 'name': g})
-                    path.append({'type': 'rule', 'name': rule_name})
+                # Add groups to path
+                for group in via_groups[:3]:  # Limit for readability
+                    path.append({'type': 'group', 'name': group})
             
-            traces.append({
+            path.append({'type': 'rule', 'name': rule_name})
+            
+            trace_entry = {
                 'rule': rule_name,
+                'rule_type': 'hbac',
                 'match_type': match_type,
                 'via_groups': via_groups,
                 'path': path,
@@ -1047,8 +1092,12 @@ class IDMClient:
                 'service_groups': rule_data.get('memberservice_hbacsvcgroup', []),
                 'service_category': safe_first(rule_data.get('servicecategory')),
                 'description': safe_first(rule_data.get('description')),
-            })
+            }
+            
+            traces.append(trace_entry)
+            self._debug(f"  Added trace entry for {rule_name}")
 
+        self._debug(f"Total HBAC traces found: {len(traces)}")
         return traces
 
     def _host_in_hostgroup(self, hostname: str, hostgroup_name: str) -> bool:

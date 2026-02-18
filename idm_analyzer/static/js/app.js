@@ -28,6 +28,7 @@ class IDMAnalyzerApp {
         this.setupBrowse();
         this.setupModal();
         this.setupGraphControls();
+        this.setupFilterChange();
     }
     
     // ==================== Data Loading ====================
@@ -606,25 +607,61 @@ class IDMAnalyzerApp {
     renderHbacTab(container) {
         const rules = this.analysisData.hbac_rules;
         
-        if (rules.length === 0) {
+        if (!rules || rules.length === 0) {
+            // Also check raw data from user object
+            const directRules = this.analysisData.direct_hbac_rules || [];
+            const indirectRules = this.analysisData.indirect_hbac_rules || [];
+            
+            if (directRules.length > 0 || indirectRules.length > 0) {
+                let html = '<table class="detail-table"><thead><tr>';
+                html += '<th>Rule</th><th>Type</th>';
+                html += '</tr></thead><tbody>';
+                
+                directRules.forEach(rule => {
+                    html += `<tr><td>${rule}</td><td><span class="badge badge-direct">Direct</span></td></tr>`;
+                });
+                indirectRules.forEach(rule => {
+                    html += `<tr><td>${rule}</td><td><span class="badge badge-via-group">Via Group</span></td></tr>`;
+                });
+                
+                html += '</tbody></table>';
+                container.innerHTML = html;
+                return;
+            }
+            
             container.innerHTML = '<div class="empty-state"><p>No HBAC rules found</p></div>';
             return;
         }
         
         let html = '<table class="detail-table"><thead><tr>';
-        html += '<th>Rule</th><th>Match Type</th><th>Via</th><th>Hosts</th>';
+        html += '<th>Rule</th><th>Match Type</th><th>Via Groups</th><th>Hosts</th><th>Services</th>';
         html += '</tr></thead><tbody>';
         
         rules.forEach(rule => {
             const matchBadge = this.getMatchBadge(rule.match_type);
             const hosts = rule.host_category === 'all' ? 'ALL' : 
-                [...rule.hosts, ...rule.hostgroups.map(h => `[${h}]`)].join(', ') || '-';
+                [...(rule.hosts || []), ...(rule.hostgroups || []).map(h => `[${h}]`)].join(', ') || '-';
+            
+            // Format services
+            let services = '-';
+            if (rule.service_category === 'all') {
+                services = 'ALL';
+            } else {
+                const svcList = [
+                    ...(rule.services || []),
+                    ...(rule.service_groups || []).map(s => `[${s}]`)
+                ];
+                if (svcList.length > 0) {
+                    services = svcList.join(', ');
+                }
+            }
             
             html += `<tr>
                 <td>${rule.name}</td>
                 <td>${matchBadge}</td>
-                <td>${rule.via_groups.join(', ') || '-'}</td>
+                <td>${(rule.via_groups || []).join(', ') || '-'}</td>
                 <td>${hosts}</td>
+                <td>${services}</td>
             </tr>`;
         });
         
@@ -635,28 +672,85 @@ class IDMAnalyzerApp {
     renderSudoTab(container) {
         const rules = this.analysisData.sudo_rules;
         
-        if (rules.length === 0) {
+        if (!rules || rules.length === 0) {
+            // Also check raw data from user object
+            const directRules = this.analysisData.direct_sudo_rules || [];
+            const indirectRules = this.analysisData.indirect_sudo_rules || [];
+            
+            if (directRules.length > 0 || indirectRules.length > 0) {
+                let html = '<table class="detail-table"><thead><tr>';
+                html += '<th>Rule</th><th>Type</th>';
+                html += '</tr></thead><tbody>';
+                
+                directRules.forEach(rule => {
+                    html += `<tr><td>${rule}</td><td><span class="badge badge-direct">Direct</span></td></tr>`;
+                });
+                indirectRules.forEach(rule => {
+                    html += `<tr><td>${rule}</td><td><span class="badge badge-via-group">Via Group</span></td></tr>`;
+                });
+                
+                html += '</tbody></table>';
+                container.innerHTML = html;
+                return;
+            }
+            
             container.innerHTML = '<div class="empty-state"><p>No sudo rules found</p></div>';
             return;
         }
         
         let html = '<table class="detail-table"><thead><tr>';
-        html += '<th>Rule</th><th>Match Type</th><th>Via</th><th>Hosts</th><th>Commands</th>';
+        html += '<th>Rule</th><th>Match Type</th><th>Via Groups</th><th>Hosts</th><th>Commands</th><th>Run As</th>';
         html += '</tr></thead><tbody>';
         
         rules.forEach(rule => {
             const matchBadge = this.getMatchBadge(rule.match_type);
             const hosts = rule.host_category === 'all' ? 'ALL' : 
-                [...rule.hosts, ...rule.hostgroups.map(h => `[${h}]`)].join(', ') || '-';
-            const commands = rule.commands.cmd_category === 'all' ? 'ALL' :
-                [...rule.commands.allow, ...rule.commands.allow_groups.map(g => `[${g}]`)].join(', ') || '-';
+                [...(rule.hosts || []), ...(rule.hostgroups || []).map(h => `[${h}]`)].join(', ') || '-';
+            
+            // Format commands
+            let commands = '-';
+            if (rule.commands) {
+                if (rule.commands.cmd_category === 'all') {
+                    commands = 'ALL';
+                } else {
+                    const cmdList = [
+                        ...(rule.commands.allow || []),
+                        ...(rule.commands.allow_groups || []).map(g => `[${g}]`)
+                    ];
+                    if (cmdList.length > 0) {
+                        commands = cmdList.join(', ');
+                    }
+                }
+            }
+            
+            // Format runas
+            let runas = '-';
+            if (rule.runas) {
+                if (rule.runas.user_category === 'all') {
+                    runas = 'ANY USER';
+                } else {
+                    const runasUsers = [
+                        ...(rule.runas.users || []),
+                        ...(rule.runas.groups || []).map(g => `%${g}`)
+                    ];
+                    if (rule.runas.extuser) {
+                        runasUsers.push(rule.runas.extuser);
+                    }
+                    if (runasUsers.length > 0) {
+                        runas = runasUsers.join(', ');
+                    } else {
+                        runas = 'root';
+                    }
+                }
+            }
             
             html += `<tr>
                 <td>${rule.name}</td>
                 <td>${matchBadge}</td>
-                <td>${rule.via_groups.join(', ') || '-'}</td>
+                <td>${(rule.via_groups || []).join(', ') || '-'}</td>
                 <td>${hosts}</td>
                 <td>${commands}</td>
+                <td>${runas}</td>
             </tr>`;
         });
         
@@ -672,7 +766,7 @@ class IDMAnalyzerApp {
         } else if (matchType === 'all_users') {
             return '<span class="badge badge-all">All Users</span>';
         }
-        return matchType;
+        return matchType || 'Unknown';
     }
     
     // ==================== Compare Users ====================
@@ -814,11 +908,63 @@ class IDMAnalyzerApp {
         let html = '';
         
         traces.forEach(trace => {
+            const ruleType = trace.rule_type || 'sudo';
+            const typeBadgeClass = ruleType === 'hbac' ? 'hbac' : 'sudo';
+            const typeBadgeText = ruleType.toUpperCase();
+            
+            // Build path display - the rule is already in path, don't duplicate
+            const pathHtml = (trace.path || []).map((item, i) => `
+                <span class="path-item path-${item.type}">${item.name}</span>
+                ${i < trace.path.length - 1 ? '<span class="path-arrow">→</span>' : ''}
+            `).join('');
+            
+            // Format hosts
+            const hostsDisplay = trace.host_category === 'all' ? 'ALL' : 
+                [...(trace.hosts || []), ...(trace.hostgroups || []).map(h => `[${h}]`)].join(', ') || '-';
+            
+            // Format commands (for sudo) or services (for hbac)
+            let extraInfo = '';
+            if (ruleType === 'sudo' && trace.commands) {
+                const cmds = trace.commands.cmd_category === 'all' ? 'ALL' : 
+                    [...(trace.commands.allow || []), ...(trace.commands.allow_groups || []).map(g => `[${g}]`)].join(', ') || '-';
+                
+                let runasDisplay = '-';
+                if (trace.runas) {
+                    if (trace.runas.user_category === 'all') {
+                        runasDisplay = 'ANY USER';
+                    } else {
+                        const users = [...(trace.runas.users || []), ...(trace.runas.ext_users || [])];
+                        runasDisplay = users.length > 0 ? users.join(', ') : 'root';
+                    }
+                }
+                
+                extraInfo = `
+                    <div class="trace-detail-item">
+                        <h5>Commands</h5>
+                        <p>${cmds}</p>
+                    </div>
+                    <div class="trace-detail-item">
+                        <h5>Run As</h5>
+                        <p>${runasDisplay}</p>
+                    </div>
+                `;
+            } else if (ruleType === 'hbac') {
+                const services = trace.service_category === 'all' ? 'ALL' : 
+                    [...(trace.services || []), ...(trace.service_groups || []).map(s => `[${s}]`)].join(', ') || '-';
+                
+                extraInfo = `
+                    <div class="trace-detail-item">
+                        <h5>Services</h5>
+                        <p>${services}</p>
+                    </div>
+                `;
+            }
+            
             html += `
                 <div class="trace-card">
                     <div class="trace-card-header">
                         <div class="trace-rule-name">
-                            <span class="type-badge sudo">SUDO</span>
+                            <span class="type-badge ${typeBadgeClass}">${typeBadgeText}</span>
                             ${trace.rule}
                         </div>
                         ${this.getMatchBadge(trace.match_type)}
@@ -827,36 +973,36 @@ class IDMAnalyzerApp {
                         <div class="trace-path">
                             <div class="trace-path-label">Permission Path:</div>
                             <div class="path-display">
-                                ${trace.path.map((item, i) => `
-                                    <span class="path-item">${item.name}</span>
-                                    ${i < trace.path.length - 1 ? '<span class="path-arrow">→</span>' : ''}
-                                `).join('')}
-                                <span class="path-arrow">→</span>
-                                <span class="path-item">${trace.rule}</span>
+                                ${pathHtml || `<span class="path-item">${trace.rule}</span>`}
                             </div>
                         </div>
+                        ${trace.via_groups && trace.via_groups.length > 0 ? `
+                        <div class="trace-via-groups">
+                            <div class="trace-path-label">Via Groups:</div>
+                            <div class="path-display">
+                                ${trace.via_groups.map(g => `<span class="path-item">${g}</span>`).join('')}
+                            </div>
+                        </div>
+                        ` : ''}
                         <div class="trace-details">
                             <div class="trace-detail-item">
                                 <h5>Hosts</h5>
-                                <p>${trace.hosts.join(', ') || 'ALL'}</p>
+                                <p>${hostsDisplay}</p>
                             </div>
+                            ${extraInfo}
+                            ${trace.description ? `
                             <div class="trace-detail-item">
-                                <h5>Commands</h5>
-                                <p>${trace.commands.cmd_category === 'all' ? 'ALL' : 
-                                    (trace.commands.allow.join(', ') || 'Specified commands')}</p>
+                                <h5>Description</h5>
+                                <p>${trace.description}</p>
                             </div>
-                            <div class="trace-detail-item">
-                                <h5>Run As</h5>
-                                <p>${trace.runas.user_category === 'all' ? 'ANY USER' : 
-                                    (trace.runas.users.join(', ') || 'root')}</p>
-                            </div>
+                            ` : ''}
                         </div>
                     </div>
                 </div>
             `;
         });
         
-        container.innerHTML = html;
+        container.innerHTML = html || '<div class="empty-state"><p>No trace results</p></div>';
     }
     
     // ==================== Browse Rules ====================
