@@ -143,6 +143,12 @@
                         <div class="graph-header">
                             <h3>Permission Graph</h3>
                             <div class="graph-controls">
+                                <select id="graph-filter" class="graph-filter-select" title="Filter view">
+                                    <option value="all">All Groups</option>
+                                    <option value="rules_only" selected>Groups with Rules Only</option>
+                                    <option value="hbac">HBAC Rules Only</option>
+                                    <option value="sudo">Sudo Rules Only</option>
+                                </select>
                                 <button id="btn-zoom-in" class="btn-icon" title="Zoom In">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <circle cx="11" cy="11" r="8"/>

@@ -173,20 +173,26 @@ class IDMAnalyzerApp {
     
     // ==================== User Analysis ====================
     
-    async analyzeUser(username) {
+    async analyzeUser(username, filterMode = null) {
         if (!username) return;
         
         const resultsContainer = document.getElementById('analysis-results');
         resultsContainer.classList.remove('hidden');
         
+        // Get filter mode from select if not provided
+        if (!filterMode) {
+            const filterSelect = document.getElementById('graph-filter');
+            filterMode = filterSelect ? filterSelect.value : 'rules_only';
+        }
+        
         // Show loading state
         this.showLoading(resultsContainer);
         
         try {
-            // Fetch analysis and graph data
+            // Fetch analysis and graph data with filter
             const [analysis, graphData] = await Promise.all([
                 fetch(`/api/user/${username}/analyze`).then(r => r.json()),
-                fetch(`/api/user/${username}/graph`).then(r => r.json())
+                fetch(`/api/user/${username}/graph?filter=${filterMode}`).then(r => r.json())
             ]);
             
             if (analysis.error || graphData.error) {
@@ -196,16 +202,52 @@ class IDMAnalyzerApp {
             
             this.currentUser = username;
             this.currentGraph = graphData;
+            this.analysisData = analysis;
             
             // Update UI
             this.updateUserInfo(analysis);
-            this.updateStats(analysis);
+            this.updateStats(analysis, graphData.stats);
             this.renderGraph(graphData);
             this.updateDetailTabs(analysis);
             
         } catch (error) {
             console.error('Analysis failed:', error);
             this.showError(resultsContainer, 'Failed to analyze user');
+        }
+    }
+    
+    setupFilterChange() {
+        const filterSelect = document.getElementById('graph-filter');
+        if (filterSelect) {
+            filterSelect.addEventListener('change', () => {
+                if (this.currentUser) {
+                    this.refreshGraph(filterSelect.value);
+                }
+            });
+        }
+    }
+    
+    async refreshGraph(filterMode) {
+        if (!this.currentUser) return;
+        
+        try {
+            const graphData = await fetch(`/api/user/${this.currentUser}/graph?filter=${filterMode}`).then(r => r.json());
+            
+            if (graphData.error) {
+                console.error('Graph refresh failed:', graphData.error);
+                return;
+            }
+            
+            this.currentGraph = graphData;
+            this.renderGraph(graphData);
+            
+            // Update stats to show filtered counts
+            if (graphData.stats) {
+                document.querySelector('#stat-groups .stat-value').textContent = graphData.stats.groups_shown;
+            }
+            
+        } catch (error) {
+            console.error('Graph refresh failed:', error);
         }
     }
     

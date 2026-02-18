@@ -521,6 +521,29 @@ html, body {
 .graph-controls {
     display: flex;
     gap: 8px;
+    align-items: center;
+}
+
+.graph-filter-select {
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: var(--font-display);
+    font-size: 0.85rem;
+    cursor: pointer;
+    margin-right: 8px;
+}
+
+.graph-filter-select:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+}
+
+.graph-filter-select option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
 }
 
 .graph-legend {
