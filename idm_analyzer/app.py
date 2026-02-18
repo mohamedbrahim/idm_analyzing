@@ -879,6 +879,128 @@ def api_debug_search(query: str):
         }), 500
 
 
+@app.route('/api/debug/user-structure/<username>')
+def api_debug_user_structure(username: str):
+    """Debug endpoint to see complete user structure and identify group fields."""
+    try:
+        result = idm_client._client.user_show(username, all=True)
+        
+        # Find all fields that might contain group info
+        group_fields = {}
+        for key, value in result.items():
+            if 'group' in key.lower() or 'member' in key.lower():
+                group_fields[key] = value
+        
+        return jsonify({
+            'status': 'success',
+            'all_keys': list(result.keys()),
+            'group_related_fields': group_fields,
+            'full_data': result
+        })
+    except NotFound:
+        return jsonify({'status': 'not_found'}), 404
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@app.route('/api/debug/analyze/<username>')
+def api_debug_analyze(username: str):
+    """Debug the analysis process step by step."""
+    debug_info = {
+        'steps': [],
+        'errors': []
+    }
+    
+    try:
+        # Step 1: Get user
+        user = idm_client.get_user(username)
+        debug_info['steps'].append({
+            'step': '1. Get user',
+            'success': user is not None,
+            'user_keys': list(user.keys()) if user else None,
+        })
+        
+        if not user:
+            debug_info['errors'].append('User not found')
+            return jsonify(debug_info)
+        
+        # Step 2: Find memberof field
+        memberof_fields = {k: v for k, v in user.items() if 'memberof' in k.lower()}
+        debug_info['steps'].append({
+            'step': '2. Find memberof fields',
+            'fields_found': memberof_fields
+        })
+        
+        # Step 3: Get groups using correct field
+        direct_groups = user.get('memberof_group', [])
+        # Also try alternate field names
+        if not direct_groups:
+            direct_groups = user.get('memberOf', [])
+        if not direct_groups:
+            # Try to find any field with groups
+            for key, value in user.items():
+                if 'memberof' in key.lower() and 'group' in key.lower():
+                    direct_groups = value
+                    break
+        
+        debug_info['steps'].append({
+            'step': '3. Extract direct groups',
+            'groups_found': direct_groups,
+            'count': len(direct_groups) if direct_groups else 0
+        })
+        
+        # Step 4: Get all groups
+        all_groups = idm_client.get_user_all_groups(username)
+        debug_info['steps'].append({
+            'step': '4. Get all groups (including nested)',
+            'all_groups': list(all_groups),
+            'count': len(all_groups)
+        })
+        
+        # Step 5: Check HBAC rules
+        hbac_rules = idm_client.get_all_hbac_rules()
+        debug_info['steps'].append({
+            'step': '5. Get HBAC rules',
+            'total_rules': len(hbac_rules),
+            'sample_rule_keys': list(hbac_rules[0].keys()) if hbac_rules else None
+        })
+        
+        # Step 6: Check Sudo rules  
+        sudo_rules = idm_client.get_all_sudo_rules()
+        debug_info['steps'].append({
+            'step': '6. Get Sudo rules',
+            'total_rules': len(sudo_rules),
+            'sample_rule_keys': list(sudo_rules[0].keys()) if sudo_rules else None
+        })
+        
+        # Step 7: Run full analysis
+        analysis = idm_client.analyze_user_permissions(username)
+        debug_info['steps'].append({
+            'step': '7. Full analysis result',
+            'has_error': 'error' in analysis,
+            'direct_groups_count': len(analysis.get('direct_groups', [])),
+            'all_groups_count': len(analysis.get('all_groups', [])),
+            'hbac_rules_count': len(analysis.get('hbac_rules', [])),
+            'sudo_rules_count': len(analysis.get('sudo_rules', [])),
+        })
+        
+        debug_info['final_analysis'] = analysis
+        
+    except Exception as e:
+        import traceback
+        debug_info['errors'].append({
+            'message': str(e),
+            'traceback': traceback.format_exc()
+        })
+    
+    return jsonify(debug_info)
+
+
 # ==================== Main ====================
 
 def main():
