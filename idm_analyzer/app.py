@@ -843,6 +843,392 @@ class IDMClient:
 
     # ==================== Permission Tracing ====================
 
+    def trace_full_permissions(self, username: str) -> Dict:
+        """
+        Build a comprehensive permission tree showing ALL paths to HBAC and Sudo rules.
+        
+        Returns a tree structure:
+        - User
+          - Direct Groups (with their rules)
+            - Parent Groups (nested, with their rules)
+          - Direct HBAC Rules
+          - Direct Sudo Rules
+          - Indirect HBAC Rules (via groups)
+          - Indirect Sudo Rules (via groups)
+        
+        For each rule, also shows:
+          - User groups in the rule
+          - Host/hostgroups in the rule
+        """
+        user = self.get_user(username)
+        if not user:
+            return {'error': f'User {username} not found'}
+        
+        self._debug(f"Building full permission tree for {username}")
+        
+        def safe_first(val, default=''):
+            if isinstance(val, list) and val:
+                return val[0]
+            return val if val else default
+        
+        # Get all user memberships
+        direct_groups = user.get('memberof_group', [])
+        indirect_groups = user.get('memberofindirect_group', [])
+        direct_hbac = user.get('memberof_hbacrule', [])
+        indirect_hbac = user.get('memberofindirect_hbacrule', [])
+        direct_sudo = user.get('memberof_sudorule', [])
+        indirect_sudo = user.get('memberofindirect_sudorule', [])
+        
+        # Build group tree with their rules
+        group_tree = []
+        processed_groups = set()
+        
+        def get_group_details(group_name, depth=0, parent_path=None):
+            """Recursively get group details including rules and parent groups."""
+            if group_name in processed_groups or depth > 10:
+                return None
+            processed_groups.add(group_name)
+            
+            group_data = self.get_group(group_name)
+            if not group_data:
+                return {
+                    'name': group_name,
+                    'type': 'group',
+                    'depth': depth,
+                    'path': (parent_path or []) + [group_name],
+                    'hbac_rules': [],
+                    'sudo_rules': [],
+                    'parent_groups': [],
+                }
+            
+            # Get rules this group is directly associated with
+            group_hbac = group_data.get('memberof_hbacrule', [])
+            group_sudo = group_data.get('memberof_sudorule', [])
+            group_indirect_hbac = group_data.get('memberofindirect_hbacrule', [])
+            group_indirect_sudo = group_data.get('memberofindirect_sudorule', [])
+            
+            # Get parent groups
+            parent_groups = group_data.get('memberof_group', [])
+            
+            current_path = (parent_path or []) + [group_name]
+            
+            # Build HBAC rule details for this group
+            hbac_rules = []
+            for rule_name in set(group_hbac) | set(group_indirect_hbac):
+                rule_detail = self._get_rule_summary(rule_name, 'hbac', 
+                                                      is_direct=(rule_name in group_hbac))
+                if rule_detail:
+                    rule_detail['access_path'] = current_path + [rule_name]
+                    hbac_rules.append(rule_detail)
+            
+            # Build Sudo rule details for this group
+            sudo_rules = []
+            for rule_name in set(group_sudo) | set(group_indirect_sudo):
+                rule_detail = self._get_rule_summary(rule_name, 'sudo',
+                                                      is_direct=(rule_name in group_sudo))
+                if rule_detail:
+                    rule_detail['access_path'] = current_path + [rule_name]
+                    sudo_rules.append(rule_detail)
+            
+            # Recursively get parent group details
+            parent_details = []
+            for parent in parent_groups:
+                parent_info = get_group_details(parent, depth + 1, current_path)
+                if parent_info:
+                    parent_details.append(parent_info)
+            
+            return {
+                'name': group_name,
+                'type': 'group',
+                'depth': depth,
+                'path': current_path,
+                'is_direct_member': group_name in direct_groups,
+                'hbac_rules': hbac_rules,
+                'sudo_rules': sudo_rules,
+                'parent_groups': parent_details,
+                'description': safe_first(group_data.get('description')),
+            }
+        
+        # Process direct groups
+        for group in direct_groups:
+            processed_groups.clear()  # Reset for each direct group tree
+            group_info = get_group_details(group, depth=0, parent_path=[username])
+            if group_info:
+                group_tree.append(group_info)
+        
+        # Build direct rule details (rules user is directly in, not via group)
+        direct_hbac_details = []
+        for rule_name in direct_hbac:
+            rule_detail = self._get_rule_summary(rule_name, 'hbac', is_direct=True)
+            if rule_detail:
+                rule_detail['access_path'] = [username, rule_name]
+                direct_hbac_details.append(rule_detail)
+        
+        direct_sudo_details = []
+        for rule_name in direct_sudo:
+            rule_detail = self._get_rule_summary(rule_name, 'sudo', is_direct=True)
+            if rule_detail:
+                rule_detail['access_path'] = [username, rule_name]
+                direct_sudo_details.append(rule_detail)
+        
+        # Build all unique paths to rules
+        all_paths = self._build_all_permission_paths(username, user)
+        
+        return {
+            'user': {
+                'uid': safe_first(user.get('uid')),
+                'cn': safe_first(user.get('cn')),
+            },
+            'summary': {
+                'total_groups': len(direct_groups) + len(indirect_groups),
+                'direct_groups': len(direct_groups),
+                'indirect_groups': len(indirect_groups),
+                'total_hbac_rules': len(set(direct_hbac) | set(indirect_hbac)),
+                'total_sudo_rules': len(set(direct_sudo) | set(indirect_sudo)),
+            },
+            'direct_hbac_rules': direct_hbac_details,
+            'direct_sudo_rules': direct_sudo_details,
+            'group_tree': group_tree,
+            'all_permission_paths': all_paths,
+        }
+    
+    def _get_rule_summary(self, rule_name: str, rule_type: str, is_direct: bool = False) -> Optional[Dict]:
+        """Get a summary of a rule including its members."""
+        def safe_first(val, default=''):
+            if isinstance(val, list) and val:
+                return val[0]
+            return val if val else default
+        
+        if rule_type == 'hbac':
+            rule = self.get_hbac_rule(rule_name)
+        else:
+            rule = self.get_sudo_rule(rule_name)
+        
+        if not rule:
+            return {
+                'name': rule_name,
+                'type': rule_type,
+                'enabled': None,
+                'is_direct': is_direct,
+                'user_groups': [],
+                'users': [],
+                'hosts': [],
+                'hostgroups': [],
+                'description': 'Details not available',
+            }
+        
+        # Check enabled status
+        enabled_raw = rule.get('ipaenabledflag')
+        enabled = safe_first(enabled_raw)
+        is_enabled = enabled in ['TRUE', 'true', True]
+        
+        result = {
+            'name': rule_name,
+            'type': rule_type,
+            'enabled': is_enabled,
+            'is_direct': is_direct,
+            'user_groups': rule.get('memberuser_group', []),
+            'users': rule.get('memberuser_user', []),
+            'user_category': safe_first(rule.get('usercategory')),
+            'hosts': rule.get('memberhost_host', []),
+            'hostgroups': rule.get('memberhost_hostgroup', []),
+            'host_category': safe_first(rule.get('hostcategory')),
+            'description': safe_first(rule.get('description')),
+        }
+        
+        if rule_type == 'hbac':
+            result['services'] = rule.get('memberservice_hbacsvc', [])
+            result['service_groups'] = rule.get('memberservice_hbacsvcgroup', [])
+            result['service_category'] = safe_first(rule.get('servicecategory'))
+        else:
+            result['commands'] = {
+                'allow': rule.get('memberallowcmd_sudocmd', []),
+                'allow_groups': rule.get('memberallowcmd_sudocmdgroup', []),
+                'cmd_category': safe_first(rule.get('cmdcategory')),
+            }
+            result['runas'] = {
+                'users': rule.get('ipasudorunas_user', []),
+                'groups': rule.get('ipasudorunas_group', []),
+                'ext_user': safe_first(rule.get('ipasudorunasextuser')),
+            }
+            result['options'] = rule.get('ipasudoopt', [])
+        
+        return result
+    
+    def _build_all_permission_paths(self, username: str, user: Dict) -> List[Dict]:
+        """Build all unique paths from user to each rule."""
+        paths = []
+        
+        direct_groups = user.get('memberof_group', [])
+        indirect_groups = user.get('memberofindirect_group', [])
+        all_groups = set(direct_groups) | set(indirect_groups)
+        
+        direct_hbac = set(user.get('memberof_hbacrule', []))
+        indirect_hbac = set(user.get('memberofindirect_hbacrule', []))
+        direct_sudo = set(user.get('memberof_sudorule', []))
+        indirect_sudo = set(user.get('memberofindirect_sudorule', []))
+        
+        all_hbac = direct_hbac | indirect_hbac
+        all_sudo = direct_sudo | indirect_sudo
+        
+        # For each rule, find all paths to it
+        for rule_name in all_hbac:
+            rule_paths = self._find_paths_to_rule(username, rule_name, 'hbac', 
+                                                   direct_groups, all_groups,
+                                                   rule_name in direct_hbac)
+            paths.extend(rule_paths)
+        
+        for rule_name in all_sudo:
+            rule_paths = self._find_paths_to_rule(username, rule_name, 'sudo',
+                                                   direct_groups, all_groups,
+                                                   rule_name in direct_sudo)
+            paths.extend(rule_paths)
+        
+        return paths
+    
+    def _find_paths_to_rule(self, username: str, rule_name: str, rule_type: str,
+                            direct_groups: List[str], all_groups: Set[str],
+                            is_direct_rule: bool) -> List[Dict]:
+        """Find all paths from user to a specific rule."""
+        paths = []
+        
+        # Get rule details
+        if rule_type == 'hbac':
+            rule = self.get_hbac_rule(rule_name)
+        else:
+            rule = self.get_sudo_rule(rule_name)
+        
+        if not rule:
+            # Can't find paths without rule details
+            return [{
+                'rule_name': rule_name,
+                'rule_type': rule_type,
+                'path': [
+                    {'type': 'user', 'name': username},
+                    {'type': 'rule', 'name': rule_name}
+                ],
+                'path_type': 'unknown',
+            }]
+        
+        # Check enabled
+        def safe_first(val, default=''):
+            if isinstance(val, list) and val:
+                return val[0]
+            return val if val else default
+        
+        enabled = safe_first(rule.get('ipaenabledflag')) in ['TRUE', 'true', True]
+        
+        # Get rule's user groups
+        rule_user_groups = set(rule.get('memberuser_group', []))
+        rule_users = rule.get('memberuser_user', [])
+        user_category = safe_first(rule.get('usercategory'))
+        
+        # Path type 1: User is directly in rule
+        if username in rule_users:
+            paths.append({
+                'rule_name': rule_name,
+                'rule_type': rule_type,
+                'enabled': enabled,
+                'path': [
+                    {'type': 'user', 'name': username},
+                    {'type': 'rule', 'name': rule_name}
+                ],
+                'path_type': 'direct_user',
+                'description': f"User '{username}' is directly added to rule",
+            })
+        
+        # Path type 2: Rule applies to all users
+        if user_category == 'all':
+            paths.append({
+                'rule_name': rule_name,
+                'rule_type': rule_type,
+                'enabled': enabled,
+                'path': [
+                    {'type': 'user', 'name': username},
+                    {'type': 'category', 'name': 'all_users'},
+                    {'type': 'rule', 'name': rule_name}
+                ],
+                'path_type': 'all_users',
+                'description': "Rule applies to all users",
+            })
+        
+        # Path type 3: Via group membership
+        # Find which groups connect user to rule
+        connecting_groups = rule_user_groups & all_groups
+        
+        for group in connecting_groups:
+            # Find the path from user to this group
+            group_path = self._trace_group_path(username, group, direct_groups)
+            
+            full_path = [{'type': 'user', 'name': username}]
+            for g in group_path:
+                full_path.append({'type': 'group', 'name': g})
+            full_path.append({'type': 'rule', 'name': rule_name})
+            
+            paths.append({
+                'rule_name': rule_name,
+                'rule_type': rule_type,
+                'enabled': enabled,
+                'path': full_path,
+                'path_type': 'via_group',
+                'connecting_group': group,
+                'description': f"Via group '{group}'",
+            })
+        
+        # If no paths found, add unknown path
+        if not paths:
+            paths.append({
+                'rule_name': rule_name,
+                'rule_type': rule_type,
+                'enabled': enabled,
+                'path': [
+                    {'type': 'user', 'name': username},
+                    {'type': 'unknown', 'name': '?'},
+                    {'type': 'rule', 'name': rule_name}
+                ],
+                'path_type': 'indirect_unknown',
+                'description': "Indirect access (path not determined)",
+            })
+        
+        return paths
+    
+    def _trace_group_path(self, username: str, target_group: str, 
+                          direct_groups: List[str]) -> List[str]:
+        """Trace the path from user to a target group through group nesting."""
+        # If target is a direct group, simple path
+        if target_group in direct_groups:
+            return [target_group]
+        
+        # BFS to find path through nested groups
+        from collections import deque
+        
+        queue = deque()
+        visited = set()
+        
+        # Start from direct groups
+        for dg in direct_groups:
+            queue.append([dg])
+            visited.add(dg)
+        
+        while queue:
+            path = queue.popleft()
+            current = path[-1]
+            
+            if current == target_group:
+                return path
+            
+            # Get parent groups of current
+            group_data = self.get_group(current)
+            if group_data:
+                parent_groups = group_data.get('memberof_group', [])
+                for parent in parent_groups:
+                    if parent not in visited:
+                        visited.add(parent)
+                        queue.append(path + [parent])
+        
+        # Fallback - just return the target
+        return [target_group]
+
     def trace_sudo_permission(self, username: str, hostname: str = None) -> List[Dict]:
         """Trace where a user's sudo permission on a host comes from."""
         user = self.get_user(username)
@@ -1499,6 +1885,13 @@ def api_trace_all(username: str):
     if rule_type in ['all', 'hbac']:
         result['hbac_rules'] = idm_client.trace_hbac_permission(username, hostname)
     
+    return jsonify(result)
+
+
+@app.route('/api/user/<username>/trace-full')
+def api_trace_full(username: str):
+    """Get comprehensive permission tree showing all paths to rules."""
+    result = idm_client.trace_full_permissions(username)
     return jsonify(result)
 
 

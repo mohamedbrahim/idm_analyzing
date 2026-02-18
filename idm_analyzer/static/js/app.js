@@ -880,28 +880,202 @@ class IDMAnalyzerApp {
         
         const container = document.getElementById('trace-results');
         container.classList.remove('hidden');
+        container.innerHTML = '<div class="loading"><div class="loading-spinner"></div><p>Tracing permissions...</p></div>';
         
         try {
-            let url = `/api/user/${username}/trace-sudo`;
-            if (hostname) {
-                url += `?host=${hostname}`;
-            }
+            // Fetch both simple trace and full permission tree
+            const [traceData, fullTrace] = await Promise.all([
+                fetch(`/api/user/${username}/trace${hostname ? `?host=${hostname}` : ''}`).then(r => r.json()),
+                fetch(`/api/user/${username}/trace-full`).then(r => r.json())
+            ]);
             
-            const response = await fetch(url);
-            const traces = await response.json();
-            
-            if (traces.length === 0) {
-                container.innerHTML = '<div class="empty-state"><p>No sudo rules found for this user' + 
-                    (hostname ? ` on ${hostname}` : '') + '</p></div>';
+            if (fullTrace.error) {
+                container.innerHTML = `<div class="empty-state"><p>${fullTrace.error}</p></div>`;
                 return;
             }
             
-            this.renderTraceResults(container, traces);
+            this.renderFullTraceResults(container, fullTrace, traceData);
             
         } catch (error) {
             console.error('Trace failed:', error);
             container.innerHTML = '<div class="empty-state"><p>Trace failed</p></div>';
         }
+    }
+    
+    renderFullTraceResults(container, fullTrace, simpleTrace) {
+        let html = '';
+        
+        // Summary section
+        html += `
+            <div class="trace-summary card">
+                <div class="card-header"><h3>Permission Summary for ${fullTrace.user?.cn || fullTrace.user?.uid}</h3></div>
+                <div class="card-body">
+                    <div class="summary-stats">
+                        <div class="summary-stat">
+                            <span class="stat-value">${fullTrace.summary?.total_groups || 0}</span>
+                            <span class="stat-label">Total Groups</span>
+                        </div>
+                        <div class="summary-stat">
+                            <span class="stat-value">${fullTrace.summary?.total_hbac_rules || 0}</span>
+                            <span class="stat-label">HBAC Rules</span>
+                        </div>
+                        <div class="summary-stat">
+                            <span class="stat-value">${fullTrace.summary?.total_sudo_rules || 0}</span>
+                            <span class="stat-label">Sudo Rules</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // All Permission Paths section
+        const allPaths = fullTrace.all_permission_paths || [];
+        if (allPaths.length > 0) {
+            html += `
+                <div class="trace-section">
+                    <h3 class="trace-section-title">All Permission Paths (${allPaths.length})</h3>
+                    <div class="trace-paths-container">
+            `;
+            
+            // Group paths by rule
+            const pathsByRule = {};
+            allPaths.forEach(path => {
+                const key = `${path.rule_type}-${path.rule_name}`;
+                if (!pathsByRule[key]) {
+                    pathsByRule[key] = {
+                        rule_name: path.rule_name,
+                        rule_type: path.rule_type,
+                        enabled: path.enabled,
+                        paths: []
+                    };
+                }
+                pathsByRule[key].paths.push(path);
+            });
+            
+            // Render each rule with its paths
+            Object.values(pathsByRule).forEach(ruleGroup => {
+                const typeBadgeClass = ruleGroup.rule_type === 'hbac' ? 'hbac' : 'sudo';
+                const statusClass = ruleGroup.enabled ? 'enabled' : 'disabled';
+                const statusText = ruleGroup.enabled ? 'Enabled' : 'Disabled';
+                
+                html += `
+                    <div class="trace-rule-card ${statusClass}">
+                        <div class="trace-rule-header">
+                            <div class="trace-rule-title">
+                                <span class="type-badge ${typeBadgeClass}">${ruleGroup.rule_type.toUpperCase()}</span>
+                                <span class="rule-name">${ruleGroup.rule_name}</span>
+                                <span class="badge badge-${statusClass}">${statusText}</span>
+                            </div>
+                            <span class="path-count">${ruleGroup.paths.length} path(s)</span>
+                        </div>
+                        <div class="trace-rule-paths">
+                `;
+                
+                ruleGroup.paths.forEach((pathInfo, idx) => {
+                    const pathHtml = pathInfo.path.map((item, i) => {
+                        let itemClass = `path-item-${item.type}`;
+                        return `<span class="path-item ${itemClass}">${item.name}</span>` +
+                               (i < pathInfo.path.length - 1 ? '<span class="path-arrow">→</span>' : '');
+                    }).join('');
+                    
+                    html += `
+                        <div class="permission-path">
+                            <div class="path-type-badge">${pathInfo.path_type.replace(/_/g, ' ')}</div>
+                            <div class="path-display">${pathHtml}</div>
+                            ${pathInfo.description ? `<div class="path-description">${pathInfo.description}</div>` : ''}
+                        </div>
+                    `;
+                });
+                
+                html += `
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Group Tree section
+        const groupTree = fullTrace.group_tree || [];
+        if (groupTree.length > 0) {
+            html += `
+                <div class="trace-section">
+                    <h3 class="trace-section-title">Group Membership Tree</h3>
+                    <div class="group-tree">
+            `;
+            
+            groupTree.forEach(group => {
+                html += this.renderGroupTreeNode(group, 0);
+            });
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+        
+        container.innerHTML = html || '<div class="empty-state"><p>No permission paths found</p></div>';
+    }
+    
+    renderGroupTreeNode(group, depth) {
+        const indent = depth * 20;
+        const hasRules = (group.hbac_rules?.length > 0) || (group.sudo_rules?.length > 0);
+        const hasParents = group.parent_groups?.length > 0;
+        
+        let html = `
+            <div class="group-tree-node" style="margin-left: ${indent}px;">
+                <div class="group-node-header ${hasRules ? 'has-rules' : ''}">
+                    <span class="group-icon">📁</span>
+                    <span class="group-name">${group.name}</span>
+                    ${group.is_direct_member ? '<span class="badge badge-direct">Direct</span>' : ''}
+                    ${hasRules ? `<span class="rules-indicator">${group.hbac_rules?.length || 0} HBAC, ${group.sudo_rules?.length || 0} Sudo</span>` : ''}
+                </div>
+        `;
+        
+        // Show rules for this group
+        if (hasRules) {
+            html += '<div class="group-rules">';
+            
+            group.hbac_rules?.forEach(rule => {
+                const statusClass = rule.enabled ? 'enabled' : 'disabled';
+                html += `
+                    <div class="group-rule hbac ${statusClass}">
+                        <span class="type-badge hbac">HBAC</span>
+                        <span class="rule-name">${rule.name}</span>
+                        <span class="badge badge-${statusClass}">${rule.enabled ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                `;
+            });
+            
+            group.sudo_rules?.forEach(rule => {
+                const statusClass = rule.enabled ? 'enabled' : 'disabled';
+                html += `
+                    <div class="group-rule sudo ${statusClass}">
+                        <span class="type-badge sudo">SUDO</span>
+                        <span class="rule-name">${rule.name}</span>
+                        <span class="badge badge-${statusClass}">${rule.enabled ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+        }
+        
+        // Recursively render parent groups
+        if (hasParents) {
+            html += '<div class="group-children">';
+            group.parent_groups.forEach(parent => {
+                html += this.renderGroupTreeNode(parent, depth + 1);
+            });
+            html += '</div>';
+        }
+        
+        html += '</div>';
+        return html;
     }
     
     renderTraceResults(container, traces) {
